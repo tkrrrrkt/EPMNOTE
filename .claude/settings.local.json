@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(npx cc-sdd@latest:*)",
+      "Bash(powershell -Command:*)",
+      "Bash(cd:*)",
+      "Bash(docker-compose down:*)",
+      "Bash(docker-compose:*)",
+      "Bash(docker exec:*)",
+      "Bash(python scripts/seed_knowledge_base.py:*)",
+      "Bash(python:*)",
+      "Bash(chcp:*)",
+      "Bash(pip show:*)",
+      "Bash(pip install:*)",
+      "Bash(curl:*)",
+      "Bash(tasklist:*)",
+      "Bash(PYTHONPATH=/c/10_dev/EPMNote python:*)",
+      "Bash(taskkill:*)",
+      "Bash(export PYTHONPATH=\"C:\\\\10_dev\\\\EPMNote\")",
+      "Bash(cmd.exe /c \"taskkill /PID 65940 /F\")",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"C:\\\\10_dev\\\\EPMNote\\\\create_shortcut.ps1\")",
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(git reset:*)"
+    ]
+  }
+}

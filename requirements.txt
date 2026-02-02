@@ -1,0 +1,44 @@
+# EPM Note Engine - Requirements
+# Generated from pyproject.toml dependencies
+
+# Web Framework
+streamlit>=1.30.0
+
+# AI/LLM
+langchain>=0.1.0
+langgraph>=0.2.0,<0.3.0  # Version pinned for API stability
+anthropic>=0.18.0
+openai>=1.10.0
+
+# Database
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.9
+alembic>=1.13.0
+
+# Vector Store
+chromadb>=0.4.22
+
+# Search API
+tavily-python>=0.3.0
+
+# Browser Automation
+playwright>=1.41.0
+
+# Configuration
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
+
+# Document parsing
+pypdf>=3.17.0
+
+# Utilities
+httpx>=0.26.0
+tenacity>=8.2.0
+
+# Development dependencies
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+ruff>=0.1.0
+mypy>=1.8.0
