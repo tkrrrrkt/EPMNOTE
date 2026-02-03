@@ -97,22 +97,27 @@ class TestResearchAgent:
         assert "第二章" in headings
         assert "第三章" in headings
 
+    @patch("src.agents.research_agent.resolve_tavily_domains")
     @patch("src.agents.research_agent.get_tavily_client")
     @patch("src.agents.research_agent.get_settings")
     def test_search_competitors(
-        self, mock_settings, mock_tavily, mock_rag_service, mock_tavily_response
+        self, mock_settings, mock_tavily, mock_resolve_domains, mock_rag_service, mock_tavily_response
     ):
         """Test competitor search with Tavily API."""
         mock_tavily_client = Mock()
         mock_tavily_client.search.return_value = mock_tavily_response
         mock_tavily.return_value = mock_tavily_client
         mock_settings.return_value = Mock()
+        # Mock resolve_tavily_domains to return empty domain lists (no filtering)
+        mock_resolve_domains.return_value = ([], [], [])
 
         agent = ResearchAgent(rag_service=mock_rag_service)
-        results = agent.search_competitors("予算管理")
+        response = agent.search_competitors("予算管理")
 
-        assert len(results) == 2
-        assert results[0]["url"] == "https://example.com/article1"
+        # search_competitors returns the full Tavily response dict
+        assert "results" in response
+        assert len(response["results"]) == 2
+        assert response["results"][0]["url"] == "https://example.com/article1"
         mock_tavily_client.search.assert_called_once()
 
     @patch("src.agents.research_agent.get_openai_client")
@@ -322,26 +327,58 @@ class TestReviewerAgent:
             assert len(result["issues"]) > 0
 
     def test_quick_check_good_content(self):
-        """Test quick check with good content."""
+        """Test quick check with good content including structure elements."""
         with patch("src.agents.reviewer_agent.get_anthropic_client"):
             agent = ReviewerAgent()
 
-            # Create content that passes all checks
-            content = "A" * 3000 + """
-## 見出し1
-内容
-## 見出し2
-内容
-## 見出し3
-内容
-## 今週の一手
-アクション
-"""
+            # Create content that passes all checks including 11 mandatory structure elements
+            # The quick_pass condition requires: len(issues) == 0 and len(missing_elements) <= 2
+            content = """「予算と実績が合わないんですけど、どうすればいいですか？」
+
+**結論から言います。** 予実管理の基本は3つのステップです。
+
+## 目次
+1. はじめに
+2. 原因分析
+3. 解決策
+
+## 一枚絵
+┌─────────────────┐
+│  予実管理の全体像   │
+└─────────────────┘
+
+## 原因①：データ収集の問題
+原因②：分析手法の未整備
+原因③：組織体制の課題
+
+## ロードマップ
+Week 1: 現状分析
+Week 2: 改善策の策定
+
+## アンチパターン
+失敗①：ツール先行の導入
+失敗②：現場を巻き込まない
+
+## 情シスの方へ
+DXの方へ：システム連携のポイント
+
+## 今日の持ち帰りチェックリスト
+- [ ] 現状の課題を整理する
+- [ ] 関係者と共有する
+
+## 次に読む
+関連記事：予算管理の実践ガイド
+
+## お問い合わせ
+プロフィールのリンクからお気軽にどうぞ
+""" + "A" * 2500  # Add padding to reach word count threshold
+
             result = agent.quick_check(content)
 
             assert result["word_count"] >= 2500
-            assert result["heading_count"] >= 3
+            assert result["heading_count"] >= 5
             assert result["has_action_item"] is True
+            assert result["structure_found"] >= 9  # At least 9 of 11 elements
             assert result["quick_pass"] is True
 
 

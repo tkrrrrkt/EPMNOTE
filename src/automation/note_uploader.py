@@ -41,7 +41,7 @@ class NoteUploader:
         self,
         email: str | None = None,
         password: str | None = None,
-        headless: bool = False,  # Changed default to False for debugging
+        headless: bool = True,  # Run headless by default for production
         screenshot_dir: str | None = None,
     ) -> None:
         """
