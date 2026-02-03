@@ -2,24 +2,96 @@
 EPM Note Engine - Reviewer Agent
 
 Evaluates article quality using a structured scoring rubric.
+Includes validation of the 11 mandatory article structure elements.
 """
 
 import json
 import logging
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 
 from src.config import get_anthropic_client
 
 logger = logging.getLogger(__name__)
 
 
+# 11 mandatory structure elements with detection patterns
+STRUCTURE_ELEMENTS = {
+    "hook": {
+        "name": "会議の一言（冒頭フック）",
+        "pattern": r"「[^」]+？」",
+        "description": "「〇〇〇〇？」という会議での発言から始まる共感フック",
+    },
+    "conclusion": {
+        "name": "結論3行",
+        "pattern": r"\*\*結論から言います",
+        "description": "「**結論から言います。**」で始まる結論",
+    },
+    "toc": {
+        "name": "目次",
+        "pattern": r"##\s*目次",
+        "description": "## 目次 セクション",
+    },
+    "diagram": {
+        "name": "一枚絵（テキスト図解）",
+        "pattern": r"[┌└│─┐┘├┤┬┴┼]",
+        "description": "罫線文字を使ったテキスト図解",
+    },
+    "causes": {
+        "name": "原因/問題（3つ構造）",
+        "pattern": r"(原因[①②③1-3]|問題[①②③1-3]|##.*原因.*[①②③1-3])",
+        "description": "3つに構造化された原因/問題の説明",
+    },
+    "roadmap": {
+        "name": "打ち手/ロードマップ",
+        "pattern": r"(Week\s*\d|Month\s*\d|\d+日|ロードマップ|ステップ[①②③1-3])",
+        "description": "期間を明示した解決策のロードマップ",
+    },
+    "antipattern": {
+        "name": "アンチパターン",
+        "pattern": r"(失敗[①②③1-3]|アンチパターン|よくある失敗|落とし穴)",
+        "description": "失敗パターンの紹介",
+    },
+    "it_corner": {
+        "name": "情シス/DXコーナー",
+        "pattern": r"(情シス|DX|IT).*方へ|##.*情シス|##.*DX",
+        "description": "情シス/DX向けの固定コーナー",
+    },
+    "checklist": {
+        "name": "チェックリスト",
+        "pattern": r"-\s*\[\s*[\sx]\s*\]|今日の持ち帰り|セルフチェック",
+        "description": "チェックボックス形式のリスト",
+    },
+    "related": {
+        "name": "次に読む",
+        "pattern": r"(次に読む|関連記事|準備中|もっと深く|テンプレート.*欲しい)",
+        "description": "関連記事へのリンク",
+    },
+    "cta": {
+        "name": "控えめCTA",
+        "pattern": r"(プロフィール.*リンク|壁打ち.*相談|お気軽に)",
+        "description": "控えめなCTA（1行）",
+    },
+}
+
+
+@dataclass
+class StructureCheckResult:
+    """Result of structure element check."""
+
+    element_name: str
+    found: bool
+    description: str
+
+
 @dataclass
 class ScoreBreakdown:
     """Score breakdown by evaluation criteria."""
 
-    target_appeal: int = 0  # 0-30: ターゲット訴求力
-    logical_structure: int = 0  # 0-40: 論理構成
-    seo_fitness: int = 0  # 0-30: SEO適合性
+    target_appeal: int = 0  # 0-25: ターゲット訴求力
+    logical_structure: int = 0  # 0-30: 論理構成
+    seo_fitness: int = 0  # 0-25: SEO適合性
+    article_structure: int = 0  # 0-20: 記事構造（11要素）
 
 
 @dataclass
@@ -30,6 +102,8 @@ class ReviewResult:
     breakdown: ScoreBreakdown = None
     feedback: str = ""
     passed: bool = False  # score >= 80
+    structure_checks: list = field(default_factory=list)  # Structure check results
+    missing_elements: list = field(default_factory=list)  # Missing structure elements
 
     def __post_init__(self):
         if self.breakdown is None:
@@ -42,9 +116,10 @@ class ReviewerAgent:
     Agent for reviewing and scoring article quality.
 
     Uses a structured rubric:
-    - Target Appeal (30 points): How well the article addresses the target persona
-    - Logical Structure (40 points): Flow, coherence, and argumentation
-    - SEO Fitness (30 points): Keyword usage and competitive positioning
+    - Target Appeal (25 points): How well the article addresses the target persona
+    - Logical Structure (30 points): Flow, coherence, and argumentation
+    - SEO Fitness (25 points): Keyword usage and competitive positioning
+    - Article Structure (20 points): Presence of 11 mandatory elements
     """
 
     PASS_THRESHOLD = 80
@@ -52,6 +127,50 @@ class ReviewerAgent:
     def __init__(self) -> None:
         """Initialize the reviewer agent."""
         self.client = get_anthropic_client()
+
+    def check_structure(self, content: str) -> tuple[list[StructureCheckResult], list[str]]:
+        """
+        Programmatically check for the 11 mandatory structure elements.
+
+        Args:
+            content: Article content in Markdown.
+
+        Returns:
+            Tuple of (all check results, list of missing element names).
+        """
+        results = []
+        missing = []
+
+        for key, element in STRUCTURE_ELEMENTS.items():
+            pattern = element["pattern"]
+            found = bool(re.search(pattern, content, re.IGNORECASE | re.MULTILINE))
+
+            results.append(StructureCheckResult(
+                element_name=element["name"],
+                found=found,
+                description=element["description"],
+            ))
+
+            if not found:
+                missing.append(element["name"])
+
+        return results, missing
+
+    def calculate_structure_score(self, missing_count: int) -> int:
+        """
+        Calculate structure score based on missing elements.
+
+        Args:
+            missing_count: Number of missing structure elements.
+
+        Returns:
+            Score out of 20.
+        """
+        # 11 elements total, each worth ~1.8 points
+        # Full score (20) if all present, deduct ~1.8 per missing
+        total_elements = len(STRUCTURE_ELEMENTS)
+        found_count = total_elements - missing_count
+        return int((found_count / total_elements) * 20)
 
     def review(
         self,
@@ -72,6 +191,21 @@ class ReviewerAgent:
         """
         logger.info("Starting article review")
 
+        # Step 1: Programmatic structure check
+        structure_checks, missing_elements = self.check_structure(draft_content)
+        structure_score = self.calculate_structure_score(len(missing_elements))
+
+        # Format missing elements for prompt
+        missing_info = ""
+        if missing_elements:
+            missing_info = f"""
+## ⚠️ 構造チェック結果（プログラム検出）
+以下の必須要素が検出されませんでした：
+{chr(10).join(f"- {elem}" for elem in missing_elements)}
+
+この情報を考慮して評価してください。
+"""
+
         prompt = f"""あなたは経営管理・FP&Aコンテンツの品質審査官です。以下の記事を評価してください。
 
 ## 評価対象記事
@@ -82,41 +216,63 @@ class ReviewerAgent:
 
 ## ターゲットSEOキーワード
 {seo_keywords}
+{missing_info}
+## 評価基準（4カテゴリ・100点満点）
 
-## 評価基準
-
-### 1. ターゲット訴求力（30点満点）
+### 1. ターゲット訴求力（25点満点）
 - ペルソナの課題・悩みに直接言及しているか
-- 共感を得られる表現・具体例があるか
+- 「会議の一言」で共感を得られるか
 - 読者が「自分のことだ」と感じられるか
+- 情シス/DXコーナーで副読者も拾えているか
 
-### 2. 論理構成（40点満点）
-- 導入→本論→結論の流れが明確か
-- 主張と根拠が対応しているか
+### 2. 論理構成（30点満点）
+- 冒頭→結論3行→本論の流れが明確か
+- 原因/問題が3つに構造化されているか
+- 打ち手/ロードマップが期間付きで具体的か
 - 各セクションのつながりが自然か
-- 「今週の一手」など実践的なアクションがあるか
 
-### 3. SEO適合性（30点満点）
+### 3. SEO適合性（25点満点）
 - キーワードが適切に配置されているか（タイトル、見出し、本文）
 - 見出し構成が競合に勝てる内容か
-- メタ的な情報（文字数、構成）が適切か
+- チェックリスト/次に読むで読者の行動を促しているか
+- 控えめCTAが適切か
+
+### 4. 記事構造（20点満点）※プログラム検出スコア: {structure_score}/20
+以下の11必須要素の品質を評価：
+1. 会議の一言（共感フック）
+2. 結論3行
+3. 目次
+4. 一枚絵（テキスト図解）
+5. 原因/問題 3つ
+6. 打ち手/ロードマップ
+7. アンチパターン
+8. 情シス/DXコーナー
+9. チェックリスト
+10. 次に読む
+11. 控えめCTA
 
 ## 出力形式（JSON）
 {{
   "target_appeal": {{
-    "score": [0-30の整数],
+    "score": [0-25の整数],
     "evaluation": "[評価コメント]",
     "improvements": ["改善点1", "改善点2"]
   }},
   "logical_structure": {{
-    "score": [0-40の整数],
+    "score": [0-30の整数],
     "evaluation": "[評価コメント]",
     "improvements": ["改善点1", "改善点2"]
   }},
   "seo_fitness": {{
-    "score": [0-30の整数],
+    "score": [0-25の整数],
     "evaluation": "[評価コメント]",
     "improvements": ["改善点1", "改善点2"]
+  }},
+  "article_structure": {{
+    "score": [0-20の整数],
+    "evaluation": "[評価コメント]",
+    "missing_elements": ["不足要素1", "不足要素2"],
+    "quality_issues": ["品質問題1", "品質問題2"]
   }},
   "overall_feedback": "[総合フィードバック]",
   "strengths": ["強み1", "強み2"],
@@ -128,7 +284,7 @@ JSONのみを出力してください。
 
         response = self.client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=1500,
+            max_tokens=2000,
             messages=[
                 {"role": "user", "content": prompt}
             ],
@@ -147,36 +303,69 @@ JSONのみを出力してください。
 
             result = json.loads(json_str.strip())
 
+            # Use programmatic structure score as base, AI can adjust within range
+            ai_structure_score = result.get("article_structure", {}).get("score", 0)
+            # Blend programmatic and AI scores (60% programmatic, 40% AI)
+            final_structure_score = int(structure_score * 0.6 + ai_structure_score * 0.4)
+
             breakdown = ScoreBreakdown(
                 target_appeal=result.get("target_appeal", {}).get("score", 0),
                 logical_structure=result.get("logical_structure", {}).get("score", 0),
                 seo_fitness=result.get("seo_fitness", {}).get("score", 0),
+                article_structure=final_structure_score,
             )
 
             total_score = (
                 breakdown.target_appeal
                 + breakdown.logical_structure
                 + breakdown.seo_fitness
+                + breakdown.article_structure
             )
 
             # Build feedback text
             feedback_parts = [
                 f"## 総合スコア: {total_score}/100点",
+                f"合格ライン: {self.PASS_THRESHOLD}点",
                 "",
-                f"### ターゲット訴求力: {breakdown.target_appeal}/30点",
+                f"### ターゲット訴求力: {breakdown.target_appeal}/25点",
                 result.get("target_appeal", {}).get("evaluation", ""),
                 "",
-                f"### 論理構成: {breakdown.logical_structure}/40点",
+                f"### 論理構成: {breakdown.logical_structure}/30点",
                 result.get("logical_structure", {}).get("evaluation", ""),
                 "",
-                f"### SEO適合性: {breakdown.seo_fitness}/30点",
+                f"### SEO適合性: {breakdown.seo_fitness}/25点",
                 result.get("seo_fitness", {}).get("evaluation", ""),
+                "",
+                f"### 記事構造: {breakdown.article_structure}/20点",
+                result.get("article_structure", {}).get("evaluation", ""),
+            ]
+
+            # Add missing elements warning
+            if missing_elements:
+                feedback_parts.extend([
+                    "",
+                    "#### ⚠️ 検出されなかった必須要素:",
+                ])
+                for elem in missing_elements:
+                    feedback_parts.append(f"- {elem}")
+
+            # Add quality issues if any
+            quality_issues = result.get("article_structure", {}).get("quality_issues", [])
+            if quality_issues:
+                feedback_parts.extend([
+                    "",
+                    "#### 構造の品質問題:",
+                ])
+                for issue in quality_issues:
+                    feedback_parts.append(f"- {issue}")
+
+            feedback_parts.extend([
                 "",
                 "## 総合フィードバック",
                 result.get("overall_feedback", ""),
                 "",
                 "## 強み",
-            ]
+            ])
 
             for strength in result.get("strengths", []):
                 feedback_parts.append(f"- {strength}")
@@ -192,21 +381,26 @@ JSONのみを出力してください。
                 breakdown=breakdown,
                 feedback=feedback,
                 passed=total_score >= self.PASS_THRESHOLD,
+                structure_checks=structure_checks,
+                missing_elements=missing_elements,
             )
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse review response: {e}")
-            # Return a default result
+            # Return a default result with structure checks
             return ReviewResult(
                 score=0,
                 breakdown=ScoreBreakdown(),
                 feedback=f"レビューの解析に失敗しました。\n\n生の出力:\n{content}",
                 passed=False,
+                structure_checks=structure_checks,
+                missing_elements=missing_elements,
             )
 
     def quick_check(self, draft_content: str) -> dict:
         """
         Perform a quick quality check without full scoring.
+        Includes programmatic structure element detection.
 
         Args:
             draft_content: The draft article content.
@@ -222,6 +416,11 @@ JSONのみを出力してください。
             for phrase in ["今週の一手", "アクション", "実践", "やってみよう", "チェック"]
         )
 
+        # Structure check
+        structure_checks, missing_elements = self.check_structure(draft_content)
+        structure_score = self.calculate_structure_score(len(missing_elements))
+        found_count = len(STRUCTURE_ELEMENTS) - len(missing_elements)
+
         issues = []
 
         if word_count < 2500:
@@ -229,16 +428,28 @@ JSONのみを出力してください。
         elif word_count > 5000:
             issues.append(f"文字数が多い可能性があります（{word_count}文字）")
 
-        if heading_count < 3:
-            issues.append("見出しが少ない可能性があります")
+        if heading_count < 5:
+            issues.append(f"見出しが少ない可能性があります（{heading_count}個）")
 
         if not has_action_item:
             issues.append("具体的なアクション項目がない可能性があります")
+
+        # Structure issues
+        if len(missing_elements) > 3:
+            issues.append(f"必須構造要素が不足しています（{found_count}/11検出）")
+            for elem in missing_elements[:3]:  # Show first 3
+                issues.append(f"  - {elem}")
+            if len(missing_elements) > 3:
+                issues.append(f"  - 他{len(missing_elements) - 3}個...")
 
         return {
             "word_count": word_count,
             "heading_count": heading_count,
             "has_action_item": has_action_item,
+            "structure_found": found_count,
+            "structure_total": len(STRUCTURE_ELEMENTS),
+            "structure_score": structure_score,
+            "missing_elements": missing_elements,
             "issues": issues,
-            "quick_pass": len(issues) == 0,
+            "quick_pass": len(issues) == 0 and len(missing_elements) <= 2,
         }
