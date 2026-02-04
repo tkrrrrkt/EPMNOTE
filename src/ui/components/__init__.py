@@ -9,6 +9,7 @@ from src.ui.components.input_form import render_input_form
 from src.ui.components.editor import render_editor
 from src.ui.components.progress import render_progress_indicator
 from src.ui.components.admin import render_admin_panel
+from src.ui.components.help_page import render_help_page, render_help_button
 
 __all__ = [
     "render_sidebar",
@@ -16,4 +17,6 @@ __all__ = [
     "render_editor",
     "render_progress_indicator",
     "render_admin_panel",
+    "render_help_page",
+    "render_help_button",
 ]

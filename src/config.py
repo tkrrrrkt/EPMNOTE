@@ -89,6 +89,18 @@ class Settings(BaseSettings):
     )
 
     # ===========================================
+    # Image API Keys
+    # ===========================================
+    unsplash_access_key: str = Field(
+        default="",
+        description="Unsplash API access key for image search",
+    )
+    pexels_api_key: str = Field(
+        default="",
+        description="Pexels API key for image search",
+    )
+
+    # ===========================================
     # ChromaDB Configuration
     # ===========================================
     chroma_persist_directory: str = Field(
@@ -149,6 +161,8 @@ class Settings(BaseSettings):
             "openai": bool(self.openai_api_key and self.openai_api_key.startswith("sk-")),
             "tavily": bool(self.tavily_api_key and self.tavily_api_key.startswith("tvly-")),
             "note_credentials": bool(self.note_email and self.note_password),
+            "unsplash": bool(self.unsplash_access_key),
+            "pexels": bool(self.pexels_api_key),
         }
 
     def check_required_apis(self, required: list[str] | None = None) -> None:

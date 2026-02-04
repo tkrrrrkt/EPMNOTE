@@ -242,6 +242,53 @@ class TestWriterAgent:
 
         assert "改善後" in revised
 
+    @patch("src.agents.writer_agent.get_anthropic_client")
+    def test_search_images_for_prompts_no_service(self, mock_anthropic):
+        """Test search_images_for_prompts when ImageService is unavailable."""
+        mock_anthropic.return_value = Mock()
+
+        agent = WriterAgent()
+
+        # Mock ImportError for ImageService
+        with patch.dict("sys.modules", {"src.services.image_service": None}):
+            # Force the import to fail
+            with patch("builtins.__import__", side_effect=ImportError("No module")):
+                result = agent.search_images_for_prompts(
+                    image_prompts=["### 図解1: テスト"],
+                    images_per_prompt=3,
+                )
+                # Should return empty list when service unavailable
+                assert result == []
+
+    @patch("src.agents.writer_agent.get_anthropic_client")
+    def test_search_images_for_prompts_success(self, mock_anthropic):
+        """Test search_images_for_prompts with mocked ImageService."""
+        mock_anthropic.return_value = Mock()
+
+        agent = WriterAgent()
+
+        # Create mock ImageService
+        mock_image_result = Mock()
+        mock_image_result.to_dict.return_value = {
+            "query": "テスト図解",
+            "source": "unsplash",
+            "images": [{"id": "1", "url_small": "s.jpg"}],
+            "error": "",
+        }
+
+        mock_service = Mock()
+        mock_service.is_available.return_value = True
+        mock_service.search_for_prompts.return_value = [mock_image_result]
+
+        with patch("src.services.image_service.ImageService", return_value=mock_service):
+            result = agent.search_images_for_prompts(
+                image_prompts=["### 図解1: テスト図解"],
+                images_per_prompt=3,
+            )
+
+            assert len(result) == 1
+            assert result[0]["query"] == "テスト図解"
+
 
 # ============================================================================
 # ReviewerAgent Tests
@@ -250,9 +297,18 @@ class TestWriterAgent:
 class TestReviewerAgent:
     """Tests for ReviewerAgent."""
 
+    @patch("src.agents.research_agent.ResearchAgent")
     @patch("src.agents.reviewer_agent.get_anthropic_client")
-    def test_review_passing_score(self, mock_anthropic):
+    def test_review_passing_score(self, mock_anthropic, mock_research_agent_cls):
         """Test review with passing score."""
+        # Mock SEO analysis to return consistent quantitative score
+        mock_research_agent = Mock()
+        mock_analysis = Mock()
+        mock_analysis.overall_seo_score = 80.0
+        mock_analysis.primary_keyword = None
+        mock_research_agent.analyze_keyword_density.return_value = mock_analysis
+        mock_research_agent_cls.return_value = mock_research_agent
+
         mock_response = Mock()
         mock_response.content = [
             Mock(
@@ -280,13 +336,24 @@ class TestReviewerAgent:
         )
 
         assert isinstance(result, ReviewResult)
-        assert result.score == 88  # 28 + 35 + 25
+        # SEO score is blended: AI(25)*0.6 + Quantitative(80/100*25)*0.4 = 15 + 8 = 23
+        # Total: 28 + 35 + 23 + 0 = 86
+        assert result.score == 86
         assert result.passed is True
         assert result.breakdown.target_appeal == 28
 
+    @patch("src.agents.research_agent.ResearchAgent")
     @patch("src.agents.reviewer_agent.get_anthropic_client")
-    def test_review_failing_score(self, mock_anthropic):
+    def test_review_failing_score(self, mock_anthropic, mock_research_agent_cls):
         """Test review with failing score."""
+        # Mock SEO analysis to return consistent quantitative score
+        mock_research_agent = Mock()
+        mock_analysis = Mock()
+        mock_analysis.overall_seo_score = 30.0  # Lower score for failing test
+        mock_analysis.primary_keyword = None
+        mock_research_agent.analyze_keyword_density.return_value = mock_analysis
+        mock_research_agent_cls.return_value = mock_research_agent
+
         mock_response = Mock()
         mock_response.content = [
             Mock(
@@ -313,7 +380,9 @@ class TestReviewerAgent:
             seo_keywords="予算管理",
         )
 
-        assert result.score == 55  # 15 + 25 + 15
+        # SEO score is blended: AI(15)*0.6 + Quantitative(30/100*25)*0.4 = 9 + 3 = 12
+        # Total: 15 + 25 + 12 + 0 = 52
+        assert result.score == 52
         assert result.passed is False
 
     def test_quick_check_short_content(self):

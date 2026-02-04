@@ -99,6 +99,16 @@ class Article(Base):
         JSONB, nullable=True
     )  # {"x": "...", "linkedin": "..."}
 
+    # Image suggestions from Unsplash/Pexels API
+    image_suggestions: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )  # [{"query": "...", "images": [...], "source": "unsplash/pexels"}]
+
+    # SEO keyword analysis results
+    keyword_analysis: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )  # {"primary_keyword": {...}, "density_score": 85, "suggestions": [...]}
+
     # Review
     review_score: Mapped[int | None] = mapped_column(nullable=True)
     review_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)

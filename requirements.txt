@@ -36,6 +36,9 @@ pypdf>=3.17.0
 httpx>=0.26.0
 tenacity>=8.2.0
 
+# Japanese NLP
+janome>=0.5.0
+
 # Development dependencies
 pytest>=7.4.0
 pytest-asyncio>=0.23.0

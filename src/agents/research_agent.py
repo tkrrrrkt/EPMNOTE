@@ -2,10 +2,13 @@
 EPM Note Engine - Research Agent
 
 Performs SEO competitor analysis using Tavily API and internal knowledge search.
+Includes keyword density analysis using Janome for Japanese NLP.
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
+from typing import Any
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -18,6 +21,14 @@ from src.config import (
 from src.repositories.rag_service import RAGService
 
 logger = logging.getLogger(__name__)
+
+# Try to import Janome for Japanese NLP
+try:
+    from janome.tokenizer import Tokenizer
+    JANOME_AVAILABLE = True
+except ImportError:
+    JANOME_AVAILABLE = False
+    logger.warning("Janome not installed. Keyword analysis will be limited.")
 
 
 @dataclass
@@ -39,6 +50,125 @@ class ResearchResult:
     suggested_outline: list[str] = field(default_factory=list)
     research_summary: str = ""
     tavily_answer: str = ""
+
+
+@dataclass
+class KeywordOccurrence:
+    """Single keyword occurrence analysis."""
+
+    keyword: str
+    count: int
+    density: float  # Percentage of total words
+    positions: list[str] = field(default_factory=list)  # ["title", "h2", "body", ...]
+    in_first_paragraph: bool = False
+    in_conclusion: bool = False
+
+
+@dataclass
+class KeywordAnalysis:
+    """Complete keyword analysis results."""
+
+    target_keywords: list[str] = field(default_factory=list)
+    total_words: int = 0
+    total_characters: int = 0
+
+    # Primary keyword analysis
+    primary_keyword: KeywordOccurrence | None = None
+
+    # Related keywords found
+    related_keywords: list[KeywordOccurrence] = field(default_factory=list)
+
+    # SEO metrics (0-100)
+    keyword_density_score: float = 0.0
+    placement_score: float = 0.0
+    overall_seo_score: float = 0.0
+
+    # Suggestions
+    suggestions: list[str] = field(default_factory=list)
+
+    # Raw frequency data
+    noun_frequency: dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSONB storage."""
+        return {
+            "target_keywords": self.target_keywords,
+            "total_words": self.total_words,
+            "total_characters": self.total_characters,
+            "primary_keyword": {
+                "keyword": self.primary_keyword.keyword,
+                "count": self.primary_keyword.count,
+                "density": self.primary_keyword.density,
+                "positions": self.primary_keyword.positions,
+                "in_first_paragraph": self.primary_keyword.in_first_paragraph,
+                "in_conclusion": self.primary_keyword.in_conclusion,
+            } if self.primary_keyword else None,
+            "related_keywords": [
+                {
+                    "keyword": kw.keyword,
+                    "count": kw.count,
+                    "density": kw.density,
+                    "positions": kw.positions,
+                }
+                for kw in self.related_keywords[:10]
+            ],
+            "keyword_density_score": self.keyword_density_score,
+            "placement_score": self.placement_score,
+            "overall_seo_score": self.overall_seo_score,
+            "suggestions": self.suggestions,
+            "top_nouns": dict(sorted(
+                self.noun_frequency.items(),
+                key=lambda x: x[1],
+                reverse=True
+            )[:20]),
+        }
+
+
+@dataclass
+class CompetitorKeyword:
+    """Keyword extracted from competitor articles."""
+
+    keyword: str
+    article_count: int  # How many articles use this keyword
+    total_articles: int  # Total articles analyzed
+    usage_rate: float  # article_count / total_articles * 100
+    found_in_titles: int  # How many article titles contain this
+    found_in_headings: int  # How many article headings contain this
+    priority: str  # "必須", "推奨", "検討"
+
+
+@dataclass
+class CompetitorKeywordResult:
+    """Result of competitor keyword extraction."""
+
+    query: str
+    total_articles: int = 0
+    keywords: list[CompetitorKeyword] = field(default_factory=list)
+    article_titles: list[str] = field(default_factory=list)
+    article_urls: list[str] = field(default_factory=list)
+    suggestions: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSONB storage."""
+        return {
+            "query": self.query,
+            "total_articles": self.total_articles,
+            "keywords": [
+                {
+                    "keyword": kw.keyword,
+                    "article_count": kw.article_count,
+                    "total_articles": kw.total_articles,
+                    "usage_rate": kw.usage_rate,
+                    "found_in_titles": kw.found_in_titles,
+                    "found_in_headings": kw.found_in_headings,
+                    "priority": kw.priority,
+                }
+                for kw in self.keywords
+            ],
+            "article_titles": self.article_titles,
+            "article_urls": self.article_urls,
+            "suggestions": self.suggestions,
+        }
 
 
 class ResearchAgent:
@@ -440,3 +570,535 @@ class ResearchAgent:
             ])
 
         return "\n".join(summary_parts)
+
+    # ===========================================
+    # Keyword Analysis Methods
+    # ===========================================
+
+    def analyze_keyword_density(
+        self,
+        content: str,
+        target_keywords: list[str],
+    ) -> KeywordAnalysis:
+        """
+        Analyze keyword density and placement in content.
+
+        Args:
+            content: Article content in Markdown format.
+            target_keywords: Target SEO keywords to analyze.
+
+        Returns:
+            KeywordAnalysis with metrics and suggestions.
+        """
+        if not JANOME_AVAILABLE:
+            return KeywordAnalysis(
+                target_keywords=target_keywords,
+                total_words=len(content.split()),
+                total_characters=len(content),
+                suggestions=["Janomeがインストールされていないため、詳細分析ができません。pip install janome を実行してください。"],
+            )
+
+        # Initialize tokenizer lazily
+        if not hasattr(self, "_tokenizer"):
+            self._tokenizer = Tokenizer()
+
+        # Parse content sections
+        sections = self._parse_content_sections(content)
+
+        # Tokenize and count
+        tokens = list(self._tokenizer.tokenize(content))
+        nouns = [
+            t.surface
+            for t in tokens
+            if t.part_of_speech.startswith("名詞")
+            and len(t.surface) > 1
+            and not t.surface.isdigit()
+        ]
+
+        total_words = len(tokens)
+        total_chars = len(content)
+
+        # Count noun frequency
+        noun_freq: dict[str, int] = {}
+        for noun in nouns:
+            noun_freq[noun] = noun_freq.get(noun, 0) + 1
+
+        # Analyze target keywords
+        primary_kw = None
+        related_kws = []
+
+        for keyword in target_keywords:
+            if not keyword.strip():
+                continue
+            occurrence = self._analyze_keyword_occurrence(
+                keyword.strip(), content, sections, total_words
+            )
+            if primary_kw is None:
+                primary_kw = occurrence
+            else:
+                related_kws.append(occurrence)
+
+        # Find additional related keywords from content
+        for noun, count in sorted(noun_freq.items(), key=lambda x: x[1], reverse=True)[:15]:
+            if noun not in target_keywords and count >= 3:
+                occurrence = self._analyze_keyword_occurrence(
+                    noun, content, sections, total_words
+                )
+                related_kws.append(occurrence)
+
+        # Calculate scores
+        density_score = self._calculate_density_score(primary_kw)
+        placement_score = self._calculate_placement_score(primary_kw)
+        overall_score = (density_score * 0.4 + placement_score * 0.6)
+
+        # Generate suggestions
+        suggestions = self._generate_seo_suggestions(
+            primary_kw, related_kws, density_score, placement_score
+        )
+
+        return KeywordAnalysis(
+            target_keywords=target_keywords,
+            total_words=total_words,
+            total_characters=total_chars,
+            primary_keyword=primary_kw,
+            related_keywords=related_kws[:10],
+            keyword_density_score=density_score,
+            placement_score=placement_score,
+            overall_seo_score=overall_score,
+            suggestions=suggestions,
+            noun_frequency=noun_freq,
+        )
+
+    def _parse_content_sections(self, content: str) -> dict[str, Any]:
+        """Parse Markdown content into sections."""
+        sections: dict[str, Any] = {
+            "title": "",
+            "first_paragraph": "",
+            "h2_headings": [],
+            "h3_headings": [],
+            "body": content,
+            "conclusion": "",
+        }
+
+        lines = content.split("\n")
+
+        # Extract title (first H1)
+        for line in lines:
+            if line.startswith("# "):
+                sections["title"] = line[2:].strip()
+                break
+
+        # Extract first paragraph (first non-heading, non-empty block)
+        in_first_para = False
+        first_para_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                if in_first_para:
+                    break
+                continue
+            if stripped.startswith("#"):
+                if in_first_para:
+                    break
+                continue
+            in_first_para = True
+            first_para_lines.append(stripped)
+        sections["first_paragraph"] = " ".join(first_para_lines)
+
+        # Extract H2/H3 headings
+        sections["h2_headings"] = re.findall(r"^## (.+)$", content, re.MULTILINE)
+        sections["h3_headings"] = re.findall(r"^### (.+)$", content, re.MULTILINE)
+
+        # Extract conclusion (content after last H2 containing "まとめ" or after ---)
+        conclusion_patterns = [r"## .*まとめ", r"## .*終わり", r"---\s*$"]
+        for pattern in conclusion_patterns:
+            match = re.search(pattern, content, re.MULTILINE)
+            if match:
+                sections["conclusion"] = content[match.start():]
+                break
+
+        return sections
+
+    def _analyze_keyword_occurrence(
+        self,
+        keyword: str,
+        content: str,
+        sections: dict[str, Any],
+        total_words: int,
+    ) -> KeywordOccurrence:
+        """Analyze a single keyword's occurrence in content."""
+        # Count occurrences (case-insensitive)
+        count = len(re.findall(re.escape(keyword), content, re.IGNORECASE))
+        density = (count / max(total_words, 1)) * 100
+
+        # Check positions
+        positions = []
+        if keyword.lower() in sections["title"].lower():
+            positions.append("title")
+        if any(keyword.lower() in h.lower() for h in sections["h2_headings"]):
+            positions.append("h2")
+        if any(keyword.lower() in h.lower() for h in sections["h3_headings"]):
+            positions.append("h3")
+        if keyword.lower() in sections["first_paragraph"].lower():
+            positions.append("first_paragraph")
+        if keyword.lower() in sections["conclusion"].lower():
+            positions.append("conclusion")
+        if keyword.lower() in sections["body"].lower():
+            positions.append("body")
+
+        return KeywordOccurrence(
+            keyword=keyword,
+            count=count,
+            density=round(density, 2),
+            positions=positions,
+            in_first_paragraph="first_paragraph" in positions,
+            in_conclusion="conclusion" in positions,
+        )
+
+    def _calculate_density_score(self, primary_kw: KeywordOccurrence | None) -> float:
+        """Calculate keyword density score (0-100)."""
+        if not primary_kw:
+            return 0.0
+
+        # Ideal density is 1-2% for Japanese content
+        density = primary_kw.density
+        if density < 0.5:
+            score = density * 100  # Too low
+        elif density <= 2.0:
+            score = 100.0  # Optimal range
+        elif density <= 3.0:
+            score = 100 - (density - 2.0) * 50  # Starting to be too high
+        else:
+            score = max(0, 50 - (density - 3.0) * 20)  # Too high
+
+        return min(100.0, max(0.0, score))
+
+    def _calculate_placement_score(self, primary_kw: KeywordOccurrence | None) -> float:
+        """Calculate keyword placement score (0-100)."""
+        if not primary_kw:
+            return 0.0
+
+        score = 0.0
+        positions = primary_kw.positions
+
+        # Weight each position
+        if "title" in positions:
+            score += 30
+        if "h2" in positions:
+            score += 20
+        if "first_paragraph" in positions:
+            score += 25
+        if "conclusion" in positions:
+            score += 15
+        if "h3" in positions:
+            score += 10
+
+        return min(100.0, score)
+
+    def _generate_seo_suggestions(
+        self,
+        primary_kw: KeywordOccurrence | None,
+        related_kws: list[KeywordOccurrence],
+        density_score: float,
+        placement_score: float,
+    ) -> list[str]:
+        """Generate SEO improvement suggestions."""
+        suggestions = []
+
+        if not primary_kw:
+            suggestions.append("ターゲットキーワードが設定されていません")
+            return suggestions
+
+        # Density suggestions
+        if primary_kw.density < 0.5:
+            suggestions.append(
+                f"キーワード「{primary_kw.keyword}」の出現率が低い（{primary_kw.density}%）。"
+                "1-2%程度を目標に、自然な形で追加してください。"
+            )
+        elif primary_kw.density > 3.0:
+            suggestions.append(
+                f"キーワード「{primary_kw.keyword}」の出現率が高すぎる（{primary_kw.density}%）。"
+                "キーワードスタッフィングと判断される可能性があります。"
+            )
+
+        # Placement suggestions
+        if "title" not in primary_kw.positions:
+            suggestions.append(
+                f"タイトルにキーワード「{primary_kw.keyword}」を含めてください（SEO重要度: 高）"
+            )
+        if "first_paragraph" not in primary_kw.positions:
+            suggestions.append(
+                f"冒頭の段落にキーワード「{primary_kw.keyword}」を含めてください"
+            )
+        if "h2" not in primary_kw.positions:
+            suggestions.append(
+                f"H2見出しにキーワード「{primary_kw.keyword}」を含めてください"
+            )
+
+        # Related keyword suggestions
+        high_freq_related = [kw for kw in related_kws if kw.count >= 5][:3]
+        if high_freq_related:
+            kw_list = "、".join([kw.keyword for kw in high_freq_related])
+            suggestions.append(
+                f"関連キーワード（{kw_list}）が多く出現しています。"
+                "これらを意図的に活用することで、トピックの網羅性を高められます。"
+            )
+
+        if not suggestions:
+            suggestions.append("キーワード最適化は良好です")
+
+        return suggestions
+
+    # ===========================================
+    # Competitor Keyword Extraction Methods
+    # ===========================================
+
+    def extract_competitor_keywords(
+        self,
+        query: str,
+        max_articles: int = 10,
+    ) -> CompetitorKeywordResult:
+        """
+        Extract common keywords from competitor articles via Tavily search.
+
+        Args:
+            query: Search query (e.g., "予算管理")
+            max_articles: Maximum number of articles to analyze.
+
+        Returns:
+            CompetitorKeywordResult with extracted keywords and usage stats.
+        """
+        logger.info(f"Extracting competitor keywords for: {query}")
+
+        # Search for competitor articles
+        try:
+            tavily_response = self.search_competitors(query, max_results=max_articles)
+        except Exception as e:
+            logger.error(f"Failed to search competitors: {e}")
+            return CompetitorKeywordResult(
+                query=query,
+                suggestions=[f"競合検索に失敗しました: {e}"],
+            )
+
+        results = tavily_response.get("results", [])
+        if not results:
+            return CompetitorKeywordResult(
+                query=query,
+                suggestions=["競合記事が見つかりませんでした"],
+            )
+
+        # Extract titles and content from results
+        article_titles = []
+        article_urls = []
+        all_text_parts = []  # Combined titles + headings for analysis
+
+        for result in results:
+            title = result.get("title", "")
+            url = result.get("url", "")
+            content = result.get("content", "")
+
+            if title:
+                article_titles.append(title)
+                all_text_parts.append(("title", title))
+            if url:
+                article_urls.append(url)
+
+            # Extract headings from content
+            headings = self.extract_headings(content)
+            for heading in headings:
+                all_text_parts.append(("heading", heading))
+
+        total_articles = len(article_titles)
+
+        # Extract and count keywords using Janome
+        keyword_stats = self._extract_keywords_from_texts(
+            all_text_parts, article_titles, total_articles
+        )
+
+        # Sort by usage rate and create CompetitorKeyword objects
+        sorted_keywords = sorted(
+            keyword_stats.items(),
+            key=lambda x: (x[1]["article_count"], x[1]["found_in_titles"]),
+            reverse=True,
+        )
+
+        keywords = []
+        for keyword, stats in sorted_keywords[:20]:  # Top 20 keywords
+            usage_rate = (stats["article_count"] / max(total_articles, 1)) * 100
+
+            # Determine priority based on usage rate
+            if usage_rate >= 70:
+                priority = "必須"
+            elif usage_rate >= 40:
+                priority = "推奨"
+            else:
+                priority = "検討"
+
+            keywords.append(CompetitorKeyword(
+                keyword=keyword,
+                article_count=stats["article_count"],
+                total_articles=total_articles,
+                usage_rate=round(usage_rate, 1),
+                found_in_titles=stats["found_in_titles"],
+                found_in_headings=stats["found_in_headings"],
+                priority=priority,
+            ))
+
+        # Generate suggestions
+        suggestions = self._generate_competitor_keyword_suggestions(keywords, query)
+
+        return CompetitorKeywordResult(
+            query=query,
+            total_articles=total_articles,
+            keywords=keywords,
+            article_titles=article_titles,
+            article_urls=article_urls,
+            suggestions=suggestions,
+        )
+
+    def _extract_keywords_from_texts(
+        self,
+        text_parts: list[tuple[str, str]],  # [("title", "text"), ("heading", "text")]
+        article_titles: list[str],
+        total_articles: int,
+    ) -> dict[str, dict[str, int]]:
+        """
+        Extract keywords from text parts and count their occurrences.
+
+        Returns:
+            Dict mapping keyword -> {"article_count": N, "found_in_titles": N, "found_in_headings": N}
+        """
+        keyword_stats: dict[str, dict[str, int]] = {}
+
+        if not JANOME_AVAILABLE:
+            # Fallback: simple word extraction
+            return self._extract_keywords_simple(text_parts, article_titles)
+
+        # Initialize tokenizer lazily
+        if not hasattr(self, "_tokenizer"):
+            self._tokenizer = Tokenizer()
+
+        # Track which articles contain each keyword
+        keyword_articles: dict[str, set[int]] = {}
+        keyword_titles: dict[str, int] = {}
+        keyword_headings: dict[str, int] = {}
+
+        for idx, (text_type, text) in enumerate(text_parts):
+            # Tokenize and extract nouns
+            tokens = list(self._tokenizer.tokenize(text))
+            nouns = set()
+
+            for token in tokens:
+                if token.part_of_speech.startswith("名詞"):
+                    surface = token.surface
+                    # Filter out short words and numbers
+                    if len(surface) >= 2 and not surface.isdigit():
+                        nouns.add(surface)
+
+            # Also extract compound nouns (2-gram)
+            token_surfaces = [t.surface for t in tokens if t.part_of_speech.startswith("名詞")]
+            for i in range(len(token_surfaces) - 1):
+                compound = token_surfaces[i] + token_surfaces[i + 1]
+                if len(compound) >= 3:
+                    nouns.add(compound)
+
+            # Update stats for each noun
+            article_idx = idx // 2  # Rough mapping to article index
+            for noun in nouns:
+                if noun not in keyword_articles:
+                    keyword_articles[noun] = set()
+                    keyword_titles[noun] = 0
+                    keyword_headings[noun] = 0
+
+                keyword_articles[noun].add(article_idx)
+
+                if text_type == "title":
+                    keyword_titles[noun] += 1
+                elif text_type == "heading":
+                    keyword_headings[noun] += 1
+
+        # Build final stats
+        for keyword in keyword_articles:
+            keyword_stats[keyword] = {
+                "article_count": len(keyword_articles[keyword]),
+                "found_in_titles": keyword_titles.get(keyword, 0),
+                "found_in_headings": keyword_headings.get(keyword, 0),
+            }
+
+        return keyword_stats
+
+    def _extract_keywords_simple(
+        self,
+        text_parts: list[tuple[str, str]],
+        article_titles: list[str],
+    ) -> dict[str, dict[str, int]]:
+        """Simple keyword extraction without Janome (fallback)."""
+        keyword_stats: dict[str, dict[str, int]] = {}
+
+        # Common Japanese stop words to filter
+        stop_words = {"の", "は", "が", "を", "に", "で", "と", "も", "や", "へ", "から", "まで", "より", "など"}
+
+        for text_type, text in text_parts:
+            # Simple split by common delimiters
+            words = re.split(r"[【】「」\s\-\|｜・、。！？\n]+", text)
+
+            for word in words:
+                word = word.strip()
+                if len(word) >= 2 and word not in stop_words:
+                    if word not in keyword_stats:
+                        keyword_stats[word] = {
+                            "article_count": 0,
+                            "found_in_titles": 0,
+                            "found_in_headings": 0,
+                        }
+                    keyword_stats[word]["article_count"] += 1
+                    if text_type == "title":
+                        keyword_stats[word]["found_in_titles"] += 1
+                    elif text_type == "heading":
+                        keyword_stats[word]["found_in_headings"] += 1
+
+        return keyword_stats
+
+    def _generate_competitor_keyword_suggestions(
+        self,
+        keywords: list[CompetitorKeyword],
+        query: str,
+    ) -> list[str]:
+        """Generate suggestions based on competitor keyword analysis."""
+        suggestions = []
+
+        # Find must-have keywords
+        must_have = [kw for kw in keywords if kw.priority == "必須"]
+        if must_have:
+            kw_list = "、".join([kw.keyword for kw in must_have[:5]])
+            suggestions.append(
+                f"必須キーワード: {kw_list} （競合の70%以上が使用）"
+            )
+
+        # Find recommended keywords
+        recommended = [kw for kw in keywords if kw.priority == "推奨"]
+        if recommended:
+            kw_list = "、".join([kw.keyword for kw in recommended[:5]])
+            suggestions.append(
+                f"推奨キーワード: {kw_list} （競合の40-70%が使用）"
+            )
+
+        # Keywords frequently in titles (high SEO value)
+        title_keywords = [kw for kw in keywords if kw.found_in_titles >= 3]
+        if title_keywords:
+            kw_list = "、".join([kw.keyword for kw in title_keywords[:3]])
+            suggestions.append(
+                f"タイトルに入れるべきキーワード: {kw_list}"
+            )
+
+        # Check if query itself is being used
+        query_used = any(query in kw.keyword or kw.keyword in query for kw in keywords[:10])
+        if not query_used:
+            suggestions.append(
+                f"検索クエリ「{query}」自体も記事に含めてください"
+            )
+
+        if not suggestions:
+            suggestions.append("競合キーワード分析が完了しました")
+
+        return suggestions

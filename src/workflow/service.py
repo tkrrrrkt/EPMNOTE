@@ -253,6 +253,7 @@ class WorkflowService:
                 article.draft_content_md = state["draft_content_md"]
                 article.title_candidates = {"titles": state["title_candidates"]}
                 article.image_prompts = {"prompts": state["image_prompts"]}
+                article.image_suggestions = {"results": state["image_suggestions"]}
                 article.sns_posts = state["sns_posts"]
                 article.status = ArticleStatus.REVIEW
                 repo.update(article)
@@ -268,10 +269,24 @@ class WorkflowService:
                 article.final_content_md = state["draft_content_md"]
                 article.title_candidates = {"titles": state["title_candidates"]}
                 article.image_prompts = {"prompts": state["image_prompts"]}
+                article.image_suggestions = {"results": state["image_suggestions"]}
                 article.sns_posts = state["sns_posts"]
                 article.review_score = state["review_score"]
                 article.review_feedback = state["review_feedback"]
                 article.status = ArticleStatus.COMPLETED
+
+                # Auto-run SEO keyword analysis
+                try:
+                    from src.agents.research_agent import ResearchAgent
+                    agent = ResearchAgent()
+                    keywords = [kw.strip() for kw in state["seo_keywords"].split(",") if kw.strip()]
+                    if keywords and state["draft_content_md"]:
+                        analysis = agent.analyze_keyword_density(state["draft_content_md"], keywords)
+                        article.keyword_analysis = analysis.to_dict()
+                        logger.info(f"SEO analysis saved: score={analysis.overall_seo_score:.0f}")
+                except Exception as e:
+                    logger.warning(f"SEO analysis failed (non-critical): {e}")
+
                 repo.update(article)
 
     # ===========================================
@@ -396,6 +411,20 @@ class WorkflowService:
             state["competitor_urls"] = competitor_analysis.get("urls", [])
             state["content_gaps"] = competitor_analysis.get("content_gaps", [])
             state["suggested_outline"] = outline_json.get("suggested_outline", [])
+
+            # Search RAG for internal references to enrich article generation
+            try:
+                from src.repositories.rag_service import RAGService
+                rag_service = RAGService()
+                internal_refs = rag_service.search_knowledge_base(
+                    article.seo_keywords or article.title,
+                    top_k=5
+                )
+                state["internal_references"] = [r.content for r in internal_refs]
+                logger.info(f"Loaded {len(state['internal_references'])} internal references from RAG")
+            except Exception as e:
+                logger.warning(f"RAG search failed (non-critical): {e}")
+                state["internal_references"] = []
 
             # Update status
             article.status = ArticleStatus.DRAFTING

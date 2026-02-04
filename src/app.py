@@ -38,6 +38,7 @@ from src.ui.components import (
 )
 from src.ui.components.progress import render_phase_header, render_compact_progress
 from src.ui.components.admin import render_admin_panel
+from src.ui.components.help_page import render_help_page
 from src.automation.note_uploader import NoteUploader, UploadResult
 
 
@@ -58,6 +59,11 @@ def main():
     # Check for admin mode
     if st.session_state.get("admin_mode"):
         render_admin_mode()
+        return
+
+    # Check for help mode
+    if st.session_state.get("show_help"):
+        render_help_mode()
         return
 
     # Initialize database (create tables if not exist)
@@ -593,6 +599,8 @@ def render_upload_phase(article: Article | None, repo: ArticleRepository) -> Non
         # タイトルをコピー
         st.text_input("タイトル（コピー用）", value=article.title, key="copy_title")
     with col2:
+        # ラベル分の高さを揃えるためのスペーサー
+        st.markdown('<p style="font-size: 14px; margin-bottom: 4px;">&nbsp;</p>', unsafe_allow_html=True)
         st.link_button("📝 Note.comで新規投稿", "https://note.com/new", use_container_width=True)
 
     # コンテンツをテキストエリアで表示（コピー可能）
@@ -696,15 +704,37 @@ def render_admin_mode() -> None:
     render_admin_panel()
 
 
+def render_help_mode() -> None:
+    """Render help mode interface."""
+    # Back button in sidebar
+    with st.sidebar:
+        if st.button("← 記事作成に戻る", use_container_width=True):
+            st.session_state.show_help = False
+            st.rerun()
+
+        st.divider()
+        st.caption("ヘルプページ")
+
+    # Render help page
+    render_help_page()
+
+
 # Add admin toggle to sidebar (called from main)
 def render_admin_toggle() -> None:
     """Render admin mode toggle in sidebar."""
     with st.sidebar:
         st.divider()
-        with st.expander("⚙️ 管理機能"):
-            if st.button("管理パネルを開く", use_container_width=True):
-                st.session_state.admin_mode = True
-                st.rerun()
+        col1, col2 = st.columns(2)
+        with col1:
+            with st.expander("⚙️ 管理機能"):
+                if st.button("管理パネルを開く", use_container_width=True):
+                    st.session_state.admin_mode = True
+                    st.rerun()
+        with col2:
+            with st.expander("❓ ヘルプ"):
+                if st.button("使い方を見る", use_container_width=True):
+                    st.session_state.show_help = True
+                    st.rerun()
 
 
 if __name__ == "__main__":

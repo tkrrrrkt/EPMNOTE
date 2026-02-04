@@ -43,6 +43,8 @@ class ArticleState(TypedDict):
     competitor_urls: list[str]
     content_gaps: list[str]
     suggested_outline: list[str]
+    competitor_keywords: list[dict]  # [{"keyword": "...", "priority": "必須/推奨/検討", "usage_rate": 80.0}]
+    internal_references: list[str]  # RAG knowledge base content for article generation
 
     # User essences
     essences: list[dict]
@@ -51,6 +53,7 @@ class ArticleState(TypedDict):
     draft_content_md: str
     title_candidates: list[str]
     image_prompts: list[str]
+    image_suggestions: list[dict]
     sns_posts: dict[str, str]
 
     # Review results
@@ -93,10 +96,13 @@ def create_initial_state(
         competitor_urls=[],
         content_gaps=[],
         suggested_outline=[],
+        competitor_keywords=[],
+        internal_references=[],
         essences=[],
         draft_content_md="",
         title_candidates=[],
         image_prompts=[],
+        image_suggestions=[],
         sns_posts={},
         review_score=0,
         review_feedback="",
@@ -129,6 +135,22 @@ def research_node(state: ArticleState) -> ArticleState:
         profile = state.get("tavily_profile") or None
         result = agent.analyze(state["seo_keywords"], domain_profile=profile)
 
+        # Extract competitor keywords for WriterAgent
+        competitor_keywords = []
+        try:
+            kw_result = agent.extract_competitor_keywords(state["seo_keywords"], max_articles=5)
+            competitor_keywords = [
+                {
+                    "keyword": kw.keyword,
+                    "priority": kw.priority,
+                    "usage_rate": kw.usage_rate,
+                }
+                for kw in kw_result.keywords[:10]
+            ]
+            logger.info(f"Extracted {len(competitor_keywords)} competitor keywords")
+        except Exception as kw_err:
+            logger.warning(f"Competitor keyword extraction failed (non-critical): {kw_err}")
+
         return {
             **state,
             "phase": "waiting_input",
@@ -136,6 +158,8 @@ def research_node(state: ArticleState) -> ArticleState:
             "competitor_urls": result.competitor_analysis.urls,
             "content_gaps": result.competitor_analysis.content_gaps,
             "suggested_outline": result.suggested_outline,
+            "competitor_keywords": competitor_keywords,
+            "internal_references": result.internal_references,
         }
 
     except Exception as e:
@@ -168,6 +192,7 @@ def drafting_node(state: ArticleState) -> ArticleState:
             ),
             suggested_outline=state["suggested_outline"],
             research_summary=state["research_summary"],
+            internal_references=state.get("internal_references", []),
         )
 
         # Check if this is a revision
@@ -191,6 +216,8 @@ def drafting_node(state: ArticleState) -> ArticleState:
                 essences=state["essences"],
                 target_persona=state["target_persona"],
                 article_title=state["article_title"],
+                competitor_keywords=state.get("competitor_keywords", []),
+                internal_references=state.get("internal_references", []),
             )
 
             return {
@@ -199,6 +226,7 @@ def drafting_node(state: ArticleState) -> ArticleState:
                 "draft_content_md": result.draft_content_md,
                 "title_candidates": result.title_candidates,
                 "image_prompts": result.image_prompts,
+                "image_suggestions": result.image_suggestions,
                 "sns_posts": result.sns_posts,
             }
 

@@ -195,6 +195,39 @@ class ReviewerAgent:
         structure_checks, missing_elements = self.check_structure(draft_content)
         structure_score = self.calculate_structure_score(len(missing_elements))
 
+        # Step 2: Quantitative SEO analysis
+        quantitative_seo_score = 50.0  # Default
+        seo_analysis = None
+        try:
+            from src.agents.research_agent import ResearchAgent
+            research_agent = ResearchAgent()
+            keywords = [kw.strip() for kw in seo_keywords.split(",") if kw.strip()]
+            if keywords:
+                seo_analysis = research_agent.analyze_keyword_density(draft_content, keywords)
+                quantitative_seo_score = seo_analysis.overall_seo_score
+                logger.info(f"Quantitative SEO score: {quantitative_seo_score:.0f}/100")
+        except Exception as e:
+            logger.warning(f"SEO analysis in review failed (non-critical): {e}")
+
+        # Format SEO metrics for prompt
+        seo_metrics_info = ""
+        if seo_analysis and seo_analysis.primary_keyword:
+            pk = seo_analysis.primary_keyword
+            positions_str = ", ".join(pk.positions) if pk.positions else "なし"
+            suggestions_str = "\n".join(f"  - {s}" for s in seo_analysis.suggestions[:3])
+            seo_metrics_info = f"""
+## 定量的SEO分析結果（参考）
+- 主要キーワード: {pk.keyword}
+- 出現回数: {pk.count}回
+- キーワード密度: {pk.density:.2f}%
+- 配置位置: {positions_str}
+- 定量スコア: {quantitative_seo_score:.0f}/100
+- 改善提案:
+{suggestions_str}
+
+上記の定量分析を参考にSEO適合性を評価してください。
+"""
+
         # Format missing elements for prompt
         missing_info = ""
         if missing_elements:
@@ -216,7 +249,7 @@ class ReviewerAgent:
 
 ## ターゲットSEOキーワード
 {seo_keywords}
-{missing_info}
+{seo_metrics_info}{missing_info}
 ## 評価基準（4カテゴリ・100点満点）
 
 ### 1. ターゲット訴求力（25点満点）
@@ -308,10 +341,17 @@ JSONのみを出力してください。
             # Blend programmatic and AI scores (60% programmatic, 40% AI)
             final_structure_score = int(structure_score * 0.6 + ai_structure_score * 0.4)
 
+            # Blend AI SEO score with quantitative score (60% AI, 40% quantitative)
+            ai_seo_score = result.get("seo_fitness", {}).get("score", 0)
+            # Convert quantitative score (0-100) to 25-point scale
+            quantitative_seo_component = (quantitative_seo_score / 100) * 25
+            final_seo_score = int(ai_seo_score * 0.6 + quantitative_seo_component * 0.4)
+            logger.info(f"SEO score blend: AI={ai_seo_score}, Quant={quantitative_seo_component:.1f}, Final={final_seo_score}")
+
             breakdown = ScoreBreakdown(
                 target_appeal=result.get("target_appeal", {}).get("score", 0),
                 logical_structure=result.get("logical_structure", {}).get("score", 0),
-                seo_fitness=result.get("seo_fitness", {}).get("score", 0),
+                seo_fitness=final_seo_score,
                 article_structure=final_structure_score,
             )
 

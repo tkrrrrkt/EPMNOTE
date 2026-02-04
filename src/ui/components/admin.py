@@ -317,18 +317,27 @@ def render_admin_panel() -> None:
     """Render the admin panel for knowledge base management."""
     st.header("管理パネル")
 
-    tab1, tab2, tab3, tab4 = st.tabs(["記事管理", "知識ベース", "検索テスト", "システム情報"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "記事管理",
+        "テーマ提案",
+        "知識ベース",
+        "検索テスト",
+        "システム情報",
+    ])
 
     with tab1:
         render_article_management_tab()
 
     with tab2:
-        render_knowledge_base_tab()
+        render_theme_proposal_tab()
 
     with tab3:
-        render_search_test_tab()
+        render_knowledge_base_tab()
 
     with tab4:
+        render_search_test_tab()
+
+    with tab5:
         render_system_info_tab()
 
 
@@ -727,6 +736,246 @@ def render_article_list() -> None:
 
     except Exception as e:
         st.error(f"記事の読み込みに失敗: {e}")
+
+
+def render_theme_proposal_tab() -> None:
+    """Render theme proposal tab for AI-assisted article theme generation."""
+    st.subheader("記事テーマ提案")
+    st.caption("軸キーワードとペルソナを入力すると、SEOトレンドとナレッジベースを分析して記事テーマを提案します。")
+
+    # Input form
+    with st.form(key="theme_proposal_form"):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            axis_keyword = st.text_input(
+                "軸キーワード *",
+                placeholder="例: 予算管理、FP&A、予実管理",
+                help="提案の中心となるキーワード",
+            )
+
+        with col2:
+            persona = st.text_input(
+                "ターゲットペルソナ *",
+                placeholder="例: CFO、経営企画部長、FP&A担当者",
+                help="想定読者像",
+            )
+
+        col3, col4 = st.columns(2)
+
+        with col3:
+            num_proposals = st.slider(
+                "提案数",
+                min_value=5,
+                max_value=10,
+                value=7,
+                help="生成するテーマ候補の数",
+            )
+
+        with col4:
+            tavily_profile = st.selectbox(
+                "検索プロファイル",
+                options=["balanced", "evidence", "market"],
+                index=0,
+                help="Tavily検索のドメイン設定",
+            )
+
+        submitted = st.form_submit_button(
+            "テーマを提案",
+            type="primary",
+            use_container_width=True,
+        )
+
+    # Execute proposal
+    if submitted:
+        if not axis_keyword or not persona:
+            st.error("軸キーワードとペルソナは必須です")
+        else:
+            with st.spinner("テーマを分析中...（SEOトレンド検索 → ナレッジベース検索 → テーマ生成）"):
+                try:
+                    from src.agents.theme_proposal_agent import (
+                        ThemeProposalAgent,
+                        ThemeProposalInput,
+                    )
+
+                    agent = ThemeProposalAgent()
+                    input_data = ThemeProposalInput(
+                        axis_keyword=axis_keyword,
+                        persona=persona,
+                        num_proposals=num_proposals,
+                        tavily_profile=tavily_profile,
+                    )
+                    result = agent.propose(input_data)
+
+                    # Save result to session
+                    st.session_state["theme_proposal_result"] = result
+                    st.success(f"✅ {len(result.proposals)}件のテーマを提案しました")
+
+                except Exception as e:
+                    st.error(f"提案生成に失敗しました: {e}")
+
+    # Display results
+    if "theme_proposal_result" in st.session_state:
+        render_theme_proposal_results(st.session_state["theme_proposal_result"])
+
+
+def render_theme_proposal_results(result) -> None:
+    """Render theme proposal results with selection and registration options."""
+    from src.agents.theme_proposal_agent import ThemeProposalResult
+
+    if not isinstance(result, ThemeProposalResult):
+        return
+
+    st.divider()
+    st.subheader("提案結果")
+
+    # Summary metrics
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("提案数", f"{len(result.proposals)} 件")
+    with col2:
+        st.metric("SEOトレンド", f"{len(result.seo_trends)} 件")
+    with col3:
+        st.metric("ナレッジトピック", f"{len(result.knowledge_topics)} 件")
+
+    st.divider()
+
+    # Initialize selection state
+    if "selected_themes" not in st.session_state:
+        st.session_state["selected_themes"] = set()
+
+    # Display each theme as expandable card
+    for i, theme in enumerate(result.proposals):
+        source_badge = {
+            "seo_trend": "SEO",
+            "knowledge_base": "KB",
+            "hybrid": "融合",
+        }.get(theme.source_type, "?")
+
+        with st.expander(
+            f"**{i+1}. {theme.title}** [{source_badge}]",
+            expanded=(i == 0),
+        ):
+            st.markdown(f"**概要:** {theme.summary}")
+            st.markdown(f"**ペルソナ:** {theme.persona}")
+            st.markdown(f"**SEOキーワード:** {', '.join(theme.seo_keywords)}")
+
+            if theme.competitor_insights:
+                st.caption(f"差別化ポイント: {', '.join(theme.competitor_insights[:2])}")
+
+            col1, col2 = st.columns([1, 2])
+
+            with col1:
+                # Selection checkbox
+                is_selected = st.checkbox(
+                    "選択",
+                    key=f"select_theme_{i}",
+                    value=i in st.session_state["selected_themes"],
+                )
+                if is_selected:
+                    st.session_state["selected_themes"].add(i)
+                else:
+                    st.session_state["selected_themes"].discard(i)
+
+            with col2:
+                # Individual registration button
+                if st.button(f"この記事を登録", key=f"register_single_{i}"):
+                    success = register_theme_as_article(theme, result.input_persona)
+                    if success:
+                        st.success(f"✅ 記事を登録しました: {theme.title[:30]}...")
+                        st.rerun()
+
+    st.divider()
+
+    # Bulk actions
+    selected_count = len(st.session_state["selected_themes"])
+    col1, col2, col3 = st.columns([2, 1, 1])
+
+    with col1:
+        if st.button(
+            f"選択した {selected_count} 件を一括登録",
+            type="primary",
+            use_container_width=True,
+            disabled=selected_count == 0,
+        ):
+            registered = 0
+            for idx in sorted(st.session_state["selected_themes"]):
+                if idx < len(result.proposals):
+                    theme = result.proposals[idx]
+                    if register_theme_as_article(theme, result.input_persona):
+                        registered += 1
+            st.success(f"✅ {registered} 件の記事を登録しました")
+            st.session_state["selected_themes"] = set()
+            st.rerun()
+
+    with col2:
+        if st.button("全選択", use_container_width=True):
+            st.session_state["selected_themes"] = set(range(len(result.proposals)))
+            st.rerun()
+
+    with col3:
+        if st.button("選択解除", use_container_width=True):
+            st.session_state["selected_themes"] = set()
+            st.rerun()
+
+    # Clear results button
+    st.divider()
+    if st.button("結果をクリア", use_container_width=True):
+        if "theme_proposal_result" in st.session_state:
+            del st.session_state["theme_proposal_result"]
+        st.session_state["selected_themes"] = set()
+        st.rerun()
+
+
+def register_theme_as_article(theme, default_persona: str) -> bool:
+    """
+    Register a proposed theme as a new article in the database.
+
+    Args:
+        theme: ProposedTheme object.
+        default_persona: Default persona if theme doesn't have one.
+
+    Returns:
+        True if registration succeeded, False otherwise.
+    """
+    from src.database.connection import get_session
+    from src.database.models import Article, ArticleStatus
+    from src.repositories.article_repository import ArticleRepository
+
+    try:
+        with get_session() as session:
+            repo = ArticleRepository(session)
+
+            # Generate week_id based on existing articles
+            existing = list(repo.get_all())
+            next_num = len(existing) + 1
+            week_num = (next_num + 1) // 2
+            day_suffix = 1 if next_num % 2 == 1 else 2
+            week_id = f"Week{week_num}-{day_suffix}"
+
+            # Check for duplicate week_id
+            existing_ids = {a.week_id for a in existing}
+            attempt = 0
+            while week_id in existing_ids:
+                attempt += 1
+                week_id = f"Week{week_num}-{day_suffix}-{attempt}"
+
+            # Create article
+            article = Article(
+                week_id=week_id,
+                title=theme.title,
+                target_persona=theme.persona or default_persona,
+                seo_keywords=", ".join(theme.seo_keywords) if theme.seo_keywords else None,
+                hook_statement=theme.summary,
+                status=ArticleStatus.PLANNING,
+            )
+            repo.create(article)
+            session.commit()
+            return True
+
+    except Exception as e:
+        st.error(f"記事登録に失敗しました: {e}")
+        return False
 
 
 def render_knowledge_base_tab() -> None:
