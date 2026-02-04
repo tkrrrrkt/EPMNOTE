@@ -315,3 +315,195 @@ class ImageService:
         except Exception as e:
             logger.warning(f"Translation failed: {e}, using original text")
             return text
+
+    # ===========================================
+    # SEO Enhancement Methods (v1.2)
+    # ===========================================
+
+    def generate_alt_text(self, query: str, article_context: str = "") -> str:
+        """
+        Generate SEO-optimized alt text for an image.
+
+        Uses Claude Haiku for cost efficiency.
+
+        Args:
+            query: The search query used to find the image.
+            article_context: Article title or context (optional).
+
+        Returns:
+            Generated alt text (50-100 characters).
+        """
+        try:
+            from src.config import get_anthropic_client
+            client = get_anthropic_client()
+            if not client:
+                return query  # Fallback to query
+
+            prompt = f"""画像のalt属性テキストを生成してください。
+
+## 画像検索キーワード
+{query}
+
+## 記事テーマ（参考）
+{article_context[:200] if article_context else "（なし）"}
+
+## 要件
+- 50-100文字（日本語）
+- 画像の内容を具体的に説明
+- SEOを意識（キーワードを自然に含める）
+- 視覚障害者にも伝わる描写
+
+## 出力
+alt属性テキストのみを出力（説明不要）。
+"""
+
+            response = client.messages.create(
+                model="claude-haiku-3-5-20241022",
+                max_tokens=150,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+            )
+
+            alt_text = response.content[0].text.strip()
+            # Ensure length constraint
+            if len(alt_text) > 100:
+                alt_text = alt_text[:97] + "..."
+            return alt_text
+
+        except Exception as e:
+            logger.warning(f"Alt text generation failed: {e}")
+            return query  # Fallback to query
+
+    def insert_images_to_markdown(
+        self,
+        content: str,
+        image_suggestions: list[dict],
+    ) -> str:
+        """
+        Insert images into markdown content at appropriate positions.
+
+        Insertion rules:
+        1. First image after "## 目次" as eyecatch
+        2. Subsequent images after each major "## " heading
+
+        Args:
+            content: Markdown content.
+            image_suggestions: List of image search results from search_for_prompts.
+
+        Returns:
+            Markdown content with images inserted.
+        """
+        if not image_suggestions:
+            return content
+
+        # Flatten images from all suggestions
+        all_images = []
+        for suggestion in image_suggestions:
+            images = suggestion.get("images", [])
+            for img in images[:1]:  # Take first image from each suggestion
+                all_images.append({
+                    "url": img.get("url_regular", ""),
+                    "alt": img.get("alt_text", "") or suggestion.get("query", ""),
+                    "author": img.get("author", ""),
+                    "source": img.get("source", ""),
+                })
+
+        if not all_images:
+            return content
+
+        lines = content.split("\n")
+        result_lines = []
+        image_index = 0
+        toc_found = False
+
+        for i, line in enumerate(lines):
+            result_lines.append(line)
+
+            # Insert first image after "## 目次"
+            if not toc_found and line.strip().startswith("## 目次"):
+                toc_found = True
+                # Find end of TOC section (next empty line or heading)
+                continue
+
+            # Insert image after TOC ends
+            if toc_found and image_index == 0:
+                # Check if this is the end of TOC section
+                if (line.strip() == "" or
+                    (line.strip().startswith("##") and "目次" not in line)):
+                    if image_index < len(all_images):
+                        img = all_images[image_index]
+                        image_md = self._format_image_markdown(img)
+                        result_lines.append("")
+                        result_lines.append(image_md)
+                        result_lines.append("")
+                        image_index += 1
+                    continue
+
+            # Insert subsequent images after major headings (## but not ###)
+            if (line.strip().startswith("## ") and
+                not line.strip().startswith("### ") and
+                "目次" not in line and
+                "次に読む" not in line and
+                "チェックリスト" not in line and
+                image_index > 0 and
+                image_index < len(all_images)):
+
+                # Look ahead to find end of section intro (after 2-3 paragraphs)
+                para_count = 0
+                for j in range(i + 1, min(i + 10, len(lines))):
+                    if lines[j].strip() == "":
+                        para_count += 1
+                    if para_count >= 2:
+                        break
+
+        return "\n".join(result_lines)
+
+    def _format_image_markdown(self, image: dict) -> str:
+        """Format an image as markdown with proper attribution."""
+        url = image.get("url", "")
+        alt = image.get("alt", "")
+        author = image.get("author", "")
+        source = image.get("source", "")
+
+        # Create markdown image
+        md = f"![{alt}]({url})"
+
+        # Add attribution as caption
+        if author and source:
+            md += f"\n*Photo by {author} on {source.capitalize()}*"
+
+        return md
+
+    def enhance_image_suggestions(
+        self,
+        suggestions: list[dict],
+        article_context: str = "",
+    ) -> list[dict]:
+        """
+        Enhance image suggestions with generated alt text.
+
+        Args:
+            suggestions: Raw image suggestions from search_for_prompts.
+            article_context: Article title/context for better alt text.
+
+        Returns:
+            Enhanced suggestions with better alt text.
+        """
+        enhanced = []
+        for suggestion in suggestions:
+            enhanced_suggestion = suggestion.copy()
+            enhanced_images = []
+
+            for img in suggestion.get("images", []):
+                enhanced_img = img.copy()
+                # Generate alt text if missing or generic
+                if not enhanced_img.get("alt_text") or len(enhanced_img.get("alt_text", "")) < 10:
+                    query = suggestion.get("query", "")
+                    enhanced_img["alt_text"] = self.generate_alt_text(query, article_context)
+                enhanced_images.append(enhanced_img)
+
+            enhanced_suggestion["images"] = enhanced_images
+            enhanced.append(enhanced_suggestion)
+
+        return enhanced

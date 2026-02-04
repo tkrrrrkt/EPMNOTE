@@ -603,3 +603,264 @@ class WriterAgent:
 
         results = service.search_for_prompts(image_prompts, images_per_prompt)
         return [r.to_dict() for r in results]
+
+    # ===========================================
+    # SEO Enhancement Methods (v1.2)
+    # ===========================================
+
+    def generate_meta_description(self, title: str, content: str) -> str:
+        """
+        Generate SEO-optimized meta description.
+
+        Args:
+            title: Article title.
+            content: Article content in markdown.
+
+        Returns:
+            Meta description (120-160 characters).
+        """
+        if not self.client:
+            return ""
+
+        prompt = f"""以下の記事のSEOメタディスクリプションを生成してください。
+
+## 記事タイトル
+{title}
+
+## 記事冒頭（500文字）
+{content[:500]}
+
+## 要件
+- 120-160文字（日本語）
+- 記事の価値を端的に伝える
+- 読者が「読みたい」と思える訴求
+- キーワードを自然に含める
+- 「この記事では〜」のような冗長な表現は避ける
+
+## 出力
+メタディスクリプションのみを出力してください（説明不要）。
+"""
+
+        try:
+            response = self.client.messages.create(
+                model="claude-haiku-3-5-20241022",  # Use Haiku for cost efficiency
+                max_tokens=200,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+            )
+            description = response.content[0].text.strip()
+            # Ensure length constraint
+            if len(description) > 160:
+                description = description[:157] + "..."
+            return description
+        except Exception as e:
+            logger.warning(f"Meta description generation failed: {e}")
+            return ""
+
+    def generate_faq_schema(self, content: str) -> dict:
+        """
+        Generate FAQ JSON-LD schema from article content.
+
+        Extracts question-answer pairs from the content structure.
+
+        Args:
+            content: Article content in markdown.
+
+        Returns:
+            JSON-LD FAQ schema dictionary.
+        """
+        if not self.client:
+            return {}
+
+        prompt = f"""以下の記事からFAQ（よくある質問）を3-5個抽出してJSON-LDスキーマを生成してください。
+
+## 記事内容
+{content[:3000]}
+
+## 抽出ガイドライン
+- 記事の見出しや内容から「読者が疑問に思うこと」を抽出
+- 「〇〇とは？」「なぜ〇〇？」「どうすれば〇〇？」形式
+- 回答は記事内容に基づき、50-150文字程度で簡潔に
+
+## 出力形式（JSON）
+```json
+{{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {{
+      "@type": "Question",
+      "name": "質問文",
+      "acceptedAnswer": {{
+        "@type": "Answer",
+        "text": "回答文"
+      }}
+    }}
+  ]
+}}
+```
+
+JSONのみを出力してください。
+"""
+
+        try:
+            response = self.client.messages.create(
+                model="claude-haiku-3-5-20241022",
+                max_tokens=1000,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+            )
+
+            text = response.content[0].text
+            # Extract JSON from response
+            import json
+            json_match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(1))
+            else:
+                # Try parsing the entire response as JSON
+                return json.loads(text)
+        except Exception as e:
+            logger.warning(f"FAQ schema generation failed: {e}")
+            return {}
+
+    def generate_cta_variants(self, persona: str, article_title: str) -> dict:
+        """
+        Generate personalized CTA variants based on persona.
+
+        Args:
+            persona: Target persona description.
+            article_title: Article title for context.
+
+        Returns:
+            Dictionary of CTA variants by type.
+        """
+        if not self.client:
+            return {}
+
+        prompt = f"""以下のペルソナと記事に合わせた3種類のCTA（行動喚起）を作成してください。
+
+## ターゲットペルソナ
+{persona}
+
+## 記事タイトル
+{article_title}
+
+## CTA種類と要件
+1. **相談型**（経営層向け）: 課題相談・壁打ちを促す
+   - 例：「○○の課題を相談したい方は、プロフィールからお気軽にどうぞ」
+2. **資料型**（担当者向け）: テンプレート・チェックリストの提供
+   - 例：「○○チェックリストは、プロフィールのリンクからダウンロードできます」
+3. **事例型**（検討者向け）: 事例・実績の紹介
+   - 例：「他社の○○事例を知りたい方は、プロフィールをご覧ください」
+
+## ガイドライン
+- 各CTA 1-2行、50文字以内
+- 売り込み感を抑え、価値提供型に
+- 「プロフィール」「リンク」への誘導を含める
+
+## 出力形式（JSON）
+```json
+{{
+  "consultation": "相談型CTAテキスト",
+  "download": "資料型CTAテキスト",
+  "case_study": "事例型CTAテキスト"
+}}
+```
+"""
+
+        try:
+            response = self.client.messages.create(
+                model="claude-haiku-3-5-20241022",
+                max_tokens=300,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+            )
+
+            text = response.content[0].text
+            import json
+            json_match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(1))
+            else:
+                return json.loads(text)
+        except Exception as e:
+            logger.warning(f"CTA variants generation failed: {e}")
+            return {}
+
+    def score_titles(self, titles: list[str], seo_keywords: list[str]) -> list[dict]:
+        """
+        Score title candidates for CTR prediction.
+
+        Uses heuristic rules to predict click-through rate potential.
+
+        Args:
+            titles: List of title candidates.
+            seo_keywords: Target SEO keywords.
+
+        Returns:
+            List of titles with scores and breakdown.
+        """
+        scored_titles = []
+
+        # Power words that boost CTR
+        power_words = [
+            "秘訣", "落とし穴", "完全ガイド", "入門", "実践",
+            "解決", "改善", "成功", "失敗", "なぜ", "理由",
+            "方法", "ステップ", "選", "つの", "徹底",
+        ]
+
+        for title in titles:
+            score = 50  # Base score
+            breakdown = {}
+
+            # Length score (30-45 chars optimal)
+            length = len(title)
+            if 30 <= length <= 45:
+                length_score = 15
+            elif 25 <= length <= 50:
+                length_score = 10
+            else:
+                length_score = 5
+            score += length_score
+            breakdown["length"] = length_score
+
+            # Number presence
+            has_number = bool(re.search(r"\d", title))
+            number_score = 10 if has_number else 0
+            score += number_score
+            breakdown["number"] = number_score
+
+            # Question format
+            is_question = "？" in title or title.endswith("?")
+            question_score = 5 if is_question else 0
+            score += question_score
+            breakdown["question"] = question_score
+
+            # Power words
+            power_count = sum(1 for pw in power_words if pw in title)
+            power_score = min(power_count * 3, 10)
+            score += power_score
+            breakdown["power_words"] = power_score
+
+            # Keyword presence at start
+            keyword_at_start = any(
+                title.startswith(kw) or title[:10].find(kw) >= 0
+                for kw in seo_keywords if kw
+            )
+            keyword_score = 10 if keyword_at_start else 0
+            score += keyword_score
+            breakdown["keyword_position"] = keyword_score
+
+            scored_titles.append({
+                "title": title,
+                "score": min(score, 100),
+                "breakdown": breakdown,
+            })
+
+        # Sort by score descending
+        scored_titles.sort(key=lambda x: x["score"], reverse=True)
+        return scored_titles

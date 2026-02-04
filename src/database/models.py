@@ -14,6 +14,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Integer,
     String,
     Text,
     func,
@@ -108,6 +109,20 @@ class Article(Base):
     keyword_analysis: Mapped[dict[str, Any] | None] = mapped_column(
         JSONB, nullable=True
     )  # {"primary_keyword": {...}, "density_score": 85, "suggestions": [...]}
+
+    # SEO Enhancement (v1.2)
+    meta_description: Mapped[str | None] = mapped_column(
+        String(200), nullable=True
+    )  # SEO meta description (120-160 chars)
+    structured_data: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )  # JSON-LD schema (FAQ, HowTo, etc.)
+    estimated_read_time: Mapped[int | None] = mapped_column(
+        nullable=True
+    )  # Reading time in minutes
+    cta_variants: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )  # {"consultation": "...", "download": "...", "case_study": "..."}
 
     # Review
     review_score: Mapped[int | None] = mapped_column(nullable=True)

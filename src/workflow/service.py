@@ -20,6 +20,25 @@ from src.workflow.graph import (
 logger = logging.getLogger(__name__)
 
 
+def calculate_read_time(content: str) -> int:
+    """
+    Calculate estimated reading time for Japanese content.
+
+    Japanese reading speed: approximately 400-600 characters per minute.
+    Uses 500 chars/min as average.
+
+    Args:
+        content: Article content in markdown.
+
+    Returns:
+        Estimated reading time in minutes (minimum 1).
+    """
+    if not content:
+        return 1
+    char_count = len(content)
+    return max(1, round(char_count / 500))
+
+
 class WorkflowService:
     """
     Service for managing article generation workflows.
@@ -275,6 +294,11 @@ class WorkflowService:
                 article.review_feedback = state["review_feedback"]
                 article.status = ArticleStatus.COMPLETED
 
+                # Calculate reading time
+                if state["draft_content_md"]:
+                    article.estimated_read_time = calculate_read_time(state["draft_content_md"])
+                    logger.info(f"Reading time: {article.estimated_read_time} min")
+
                 # Auto-run SEO keyword analysis
                 try:
                     from src.agents.research_agent import ResearchAgent
@@ -286,6 +310,41 @@ class WorkflowService:
                         logger.info(f"SEO analysis saved: score={analysis.overall_seo_score:.0f}")
                 except Exception as e:
                     logger.warning(f"SEO analysis failed (non-critical): {e}")
+
+                # Generate SEO enhancements (meta description, FAQ schema, CTA variants)
+                try:
+                    from src.agents.writer_agent import WriterAgent
+                    writer = WriterAgent()
+
+                    # Meta description
+                    if state["draft_content_md"]:
+                        meta_desc = writer.generate_meta_description(
+                            article.title,
+                            state["draft_content_md"]
+                        )
+                        if meta_desc:
+                            article.meta_description = meta_desc
+                            logger.info(f"Meta description generated: {len(meta_desc)} chars")
+
+                    # FAQ schema
+                    if state["draft_content_md"]:
+                        faq_schema = writer.generate_faq_schema(state["draft_content_md"])
+                        if faq_schema and faq_schema.get("mainEntity"):
+                            article.structured_data = faq_schema
+                            logger.info(f"FAQ schema generated: {len(faq_schema.get('mainEntity', []))} items")
+
+                    # CTA variants
+                    if article.target_persona:
+                        cta_variants = writer.generate_cta_variants(
+                            article.target_persona,
+                            article.title
+                        )
+                        if cta_variants:
+                            article.cta_variants = cta_variants
+                            logger.info(f"CTA variants generated: {len(cta_variants)} types")
+
+                except Exception as e:
+                    logger.warning(f"SEO enhancements failed (non-critical): {e}")
 
                 repo.update(article)
 
